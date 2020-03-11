@@ -1,0 +1,139 @@
+# Create an Azure Virtual Machine instance and add a way to destroy it
+---
+- hosts: local
+  connection: local
+
+  vars:
+    region: EastUS
+    prefix: myweb
+    subnet_name: internal
+    public_ip_name: external
+
+  tasks:
+  - name: Create a resource group
+    azure_rm_resourcegroup:
+      name: "{{ prefix }}-rg"
+      location: "{{ region }}"
+      state: present
+      tags:
+          Site: "{{ prefix }}.com"
+
+  - name: Create a DNS Zone
+    azure_rm_dnszone:
+      name: "{{ prefix }}.com"
+      resource_group: "{{ prefix }}-rg"
+      state: present
+      tags:
+          Site: "{{ prefix }}.com"
+
+  - name: Create a Virtual Network
+    azure_rm_virtualnetwork:
+      name: "{{ prefix }}-net"
+      address_prefixes: "10.0.0.0/16"
+      location: "{{ region }}"
+      resource_group: "{{ prefix }}-rg"
+      state: present
+      tags:
+          Site: "{{ prefix }}.com"
+
+  - name: Add a Subnet
+    azure_rm_subnet:
+      name: "{{ subnet_name }}"
+      resource_group: "{{ prefix }}-rg"
+      virtual_network: "{{ prefix }}-net"
+      address_prefix: "10.0.1.0/24"
+      state: present
+
+  - name: Allocate a Static Public IP
+    azure_rm_publicipaddress:
+      name: "{{ public_ip_name }}"
+      location: "{{ region }}"
+      resource_group: "{{ prefix }}-rg"
+      allocation_method: Static
+      state: present
+      tags:
+          Site: "{{ prefix }}.com"
+    register: static_public_ip
+
+  - name: Create a Network Security Group and allow inbound port(s)
+    azure_rm_securitygroup:
+      name: "{{ prefix }}-nsg"
+      location: "{{ region }}"
+      resource_group: "{{ prefix }}-rg"
+      rules:
+        - name: SSH
+          priority: 1001
+          direction: Inbound
+          access: Allow
+          protocol: Tcp
+          source_port_range: "*"
+          destination_port_range: 22
+          source_address_prefix: "*"
+          destination_address_prefix: "*"
+      state: present
+      tags:
+          Site: "{{ prefix }}.com"
+
+  - name: Create a Network Interface with a Dynamic Private IP
+    azure_rm_networkinterface:
+      name: "{{ prefix }}-nic"
+      location: "{{ region }}"
+      resource_group: "{{ prefix }}-rg"
+      security_group: "{{ prefix }}-nsg"
+      virtual_network: "{{ prefix }}-net"
+      subnet_name: "{{ subnet_name }}"
+      ip_configurations:
+        - name: "{{ prefix }}-nic_conf"
+          private_ip_allocation_method: Dynamic
+          public_ip_address_name: "{{ public_ip_name }}"
+          primary: True
+      state: present
+      tags:
+          Site: "{{ prefix }}.com"
+
+  - name: Create an Ubuntu Virtual Machine with key based access and run a script on boot; use a Standard SSD
+    azure_rm_virtualmachine:
+      name: "{{ prefix }}-vm"
+      location: "{{ region }}"
+      resource_group: "{{ prefix }}-rg"
+      network_interfaces: "{{ prefix }}-nic"
+      vm_size: Basic_A1
+      image:
+        publisher: Canonical
+        offer: UbuntuServer
+        sku: '18.04-LTS'
+        version: latest
+      os_type: Linux
+      os_disk_name: "{{ prefix }}-disk"
+      os_disk_caching: ReadWrite
+      managed_disk_type: StandardSSD_LRS
+      short_hostname: "{{ prefix }}"
+      admin_username: ubuntu
+      custom_data: "{{ lookup('file', './scripts/install.sh') }}"
+      ssh_password_enabled: false
+      ssh_public_keys:
+            - path: /home/ubuntu/.ssh/authorized_keys
+              key_data: "{{ lookup('file', '~/.ssh/{{ prefix }}.pub') }}"
+      state: present
+      tags:
+          'Site': "{{ prefix }}.com"
+
+  - debug: msg="Public (static) IP is {{ static_public_ip.state.ip_address }} for {{ azure_vm.name }}"
+    when: static_public_ip.state.ip_address is defined
+
+  - debug: msg="Run this playbook for {{ azure_vm.name }} shortly to list the Public (static) IP."
+    when: static_public_ip.state.ip_address is not defined
+
+  - name: Destroy a Resource Group and all resources that fall under it
+    azure_rm_resourcegroup:
+      name: "{{ prefix }}-rg"
+      force_delete_nonempty: yes
+      state: absent
+    tags: [ 'never', 'destroy' ]
+
+  - name: Destroy the Network Watcher Resource Group and all resources that fall under it
+    azure_rm_resourcegroup:
+      name: "NetworkWatcherRG"
+      force_delete_nonempty: yes
+      state: absent
+    tags: [ 'never', 'destroy_networkwatcher' ]
