@@ -1,0 +1,29 @@
+# Create a new AWS Lightsail instance, register the instance details and add a way to destroy it
+---
+- hosts: local
+  connection: local
+
+  tasks:
+    - lightsail:
+        state: present
+        name: myweb.com
+        region: us-east-1
+        zone: us-east-1a
+        blueprint_id: ubuntu_18_04
+        bundle_id: micro_2_0
+        key_pair_name: myweb
+        user_data: "{{ lookup('file', './scripts/install.sh') }}"
+        wait_timeout: 500
+      register: myweb
+
+    - debug: msg="Public IP is {{ myweb.instance.public_ip_address }} for {{ myweb.instance.name }}"
+      when: myweb.instance.public_ip_address is defined
+
+    - debug: msg="Run this playbook for {{ myweb.instance.name }} shortly to list the Public IP."
+      when: myweb.instance.public_ip_address is not defined
+
+    - lightsail:
+        state: absent
+        name: myweb.com
+        region: us-east-1
+      tags: [ 'never', 'destroy' ]
